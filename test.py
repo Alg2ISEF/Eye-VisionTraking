@@ -5,33 +5,30 @@ import subprocess
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-# 1. Lock camera parameters via v4l2-ctl for 120 FPS
+# 1. Lock camera parameters via v4l2-ctl for 120 FPS (WITHOUT hardware zoom)
 dev_path = "/dev/video1"
 try:
     subprocess.run(["v4l2-ctl", "-d", dev_path, "-c", "auto_exposure=1"], check=True)
     subprocess.run(["v4l2-ctl", "-d", dev_path, "-c", "exposure_dynamic_framerate=0"], check=True)
     subprocess.run(["v4l2-ctl", "-d", dev_path, "-c", "exposure_time_absolute=10"], check=True)
     subprocess.run(["v4l2-ctl", "-d", dev_path, "-c", "gain=25"], check=True)
-    subprocess.run(["v4l2-ctl", "-d", dev_path, "-c", "zoom_absolute=450"], check=True)
+    subprocess.run(["v4l2-ctl", "-d", dev_path, "-c", "zoom_absolute=0"], check=True)
+
 except (subprocess.CalledProcessError, FileNotFoundError) as error:
     print(f"Warning during V4L2 config: {error}")
 
+CAM_WIDTH = 960
+CAM_HEIGHT = 540
+# Capture at full sensor resolution to enable clean software cropping
 cap = cv2.VideoCapture(1, cv2.CAP_V4L2)
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_WIDTH)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_HEIGHT)
 cap.set(cv2.CAP_PROP_FPS, 120)
 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
 if not cap.isOpened():
     raise RuntimeError(f"Could not open camera at {dev_path}")
-
-print(
-    f"Camera stream: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
-    f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} @ "
-    f"{cap.get(cv2.CAP_PROP_FPS):.1f} FPS",
-    flush=True,
-)
 
 base_options = python.BaseOptions(model_asset_path="face_landmarker.task")
 landmarker_options = vision.FaceLandmarkerOptions(
@@ -41,13 +38,19 @@ landmarker_options = vision.FaceLandmarkerOptions(
 )
 landmarker = vision.FaceLandmarker.create_from_options(landmarker_options)
 
-window_name = 'Live Camera Stream'
+window_name = 'Live Camera Stream (Software Zoom)'
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
 calibration_targets = np.array(
     [
         [0.1, 0.1],
+        [0.5, 0.1],
         [0.9, 0.1],
+        [0.1, 0.5],
+        [0.5, 0.5],
+        [0.9, 0.5],
+        [0.9, 0.1],
+        [0.5, 0.9],
         [0.9, 0.9],
         [0.1, 0.9],
     ],
@@ -66,13 +69,23 @@ latency_total = np.float64(0.0)
 latency_count = np.int64(0)
 
 while cap.isOpened():
-    success, frame = cap.read()
+    success, raw_frame = cap.read()
     if not success:
         print("Failed to grab frame.")
         break
 
     frame_start = np.int64(cv2.getTickCount())
-    frame = cv2.flip(frame, 1)
+    raw_frame = cv2.flip(raw_frame, 1)
+
+
+    crop_w = int(CAM_WIDTH / 4.5)  
+    crop_h = int(CAM_HEIGHT / 4.5)
+    x_start = (CAM_WIDTH - crop_w) // 2
+    y_start = (CAM_HEIGHT - crop_h) // 2
+
+    cropped = raw_frame[y_start:y_start+crop_h, x_start:x_start+crop_w]
+    frame = cv2.resize(cropped, (960, 540), interpolation=cv2.INTER_LINEAR)
+    # ---------------------------------------
 
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
@@ -140,13 +153,13 @@ while cap.isOpened():
         cv2.circle(
             frame,
             (int(target_pixel[0]), int(target_pixel[1])),
-            18,
+            9,
             (0, 0, 255),
             -1,
         )
         cv2.putText(
             frame,
-            f"Look at the dot and press SPACE ({calibration_index + 1}/4)",
+            f"Look at the dot and press SPACE ({calibration_index + 1}/9)",
             (20, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
@@ -200,7 +213,7 @@ while cap.isOpened():
                 flush=True,
             )
             calibration_index = np.add(calibration_index, np.int64(1))
-            if calibration_index == np.int64(4):
+            if calibration_index == np.int64(9):
                 samples = np.array(calibration_samples, dtype=np.float64)
                 design_matrix = np.column_stack(
                     (samples[:, 0], samples[:, 1], np.ones(len(samples)))
