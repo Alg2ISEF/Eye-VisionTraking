@@ -22,6 +22,15 @@ except (subprocess.CalledProcessError, FileNotFoundError) as error:
 
 CAM_WIDTH = 1270
 CAM_HEIGHT = 720
+try:
+    camera_parameters = np.load("camera_params.npz")
+    camera_matrix = camera_parameters["mtx"].astype(np.float64)
+    distortion_coefficients = camera_parameters["dist"].astype(np.float64)
+except (FileNotFoundError, KeyError) as error:
+    print(f"Warning: could not load camera calibration: {error}")
+    camera_matrix = None
+    distortion_coefficients = None
+
 # Capture at full sensor resolution to enable clean software cropping
 cap = cv2.VideoCapture(1, cv2.CAP_V4L2)
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
@@ -83,6 +92,17 @@ iris_eye_indices = (
     np.arange(473, 478, dtype=np.int32),
 )
 eye_corner_pairs = ((33, 133), (362, 263))
+pose_landmark_indices = np.array([1, 33, 263, 133, 362], dtype=np.int32)
+pose_object_points = np.array(
+    [
+        [0.0, 0.0, 0.0],
+        [-30.0, 20.0, -30.0],
+        [30.0, 20.0, -30.0],
+        [-10.0, 15.0, -15.0],
+        [10.0, 15.0, -15.0],
+    ],
+    dtype=np.float64,
+)
 validation_targets = np.array(
     [
         [0.5, 0.5],
@@ -239,8 +259,72 @@ while not capture_stop.is_set():
     filtered_dual_eye_gaze = None
     relative_gaze = None
     gaze_position = None
+    pose_rotation = None
+    pose_translation = None
     if result.face_landmarks:
         face_landmarks = result.face_landmarks[0]
+        pose_image_points = np.array(
+            [
+                [
+                    face_landmarks[index].x * frame.shape[1],
+                    face_landmarks[index].y * frame.shape[0],
+                ]
+                for index in pose_landmark_indices
+            ],
+            dtype=np.float64,
+        )
+        if camera_matrix is not None:
+            resized_camera_matrix = camera_matrix.copy()
+            resized_camera_matrix[0, 0] *= frame.shape[1] / CAM_WIDTH
+            resized_camera_matrix[1, 1] *= frame.shape[0] / CAM_HEIGHT
+            resized_camera_matrix[0, 2] = (
+                resized_camera_matrix[0, 2] - x_start
+            ) * frame.shape[1] / CAM_WIDTH
+            resized_camera_matrix[1, 2] = (
+                resized_camera_matrix[1, 2] - y_start
+            ) * frame.shape[0] / CAM_HEIGHT
+            pnp_success, pose_rotation, pose_translation = cv2.solvePnP(
+                pose_object_points,
+                pose_image_points,
+                resized_camera_matrix,
+                distortion_coefficients,
+                flags=cv2.SOLVEPNP_SQPNP,
+            )
+            if pnp_success:
+                for axis_length in (40.0, 20.0, 10.0, 5.0):
+                    axis_points = np.array(
+                        [
+                            [0.0, 0.0, 0.0],
+                            [axis_length, 0.0, 0.0],
+                            [0.0, axis_length, 0.0],
+                            [0.0, 0.0, axis_length],
+                        ],
+                        dtype=np.float64,
+                    )
+                    projected_axis_points, _ = cv2.projectPoints(
+                        axis_points,
+                        pose_rotation,
+                        pose_translation,
+                        resized_camera_matrix,
+                        distortion_coefficients,
+                    )
+                    projected_axis_points = projected_axis_points.reshape(-1, 2)
+                    if np.all(
+                        (projected_axis_points[:, 0] >= 0)
+                        & (projected_axis_points[:, 0] < frame.shape[1])
+                        & (projected_axis_points[:, 1] >= 0)
+                        & (projected_axis_points[:, 1] < frame.shape[0])
+                    ):
+                        cv2.drawFrameAxes(
+                            frame,
+                            resized_camera_matrix,
+                            distortion_coefficients,
+                            pose_rotation,
+                            pose_translation,
+                            axis_length,
+                            2,
+                        )
+                        break
         iris_indices = np.concatenate(iris_eye_indices)
         iris_pixels = np.array(
             [

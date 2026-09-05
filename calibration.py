@@ -8,7 +8,7 @@ try:
     subprocess.run(["v4l2-ctl", "-d", dev_path, "-c", "exposure_dynamic_framerate=0"], check=True)
     subprocess.run(["v4l2-ctl", "-d", dev_path, "-c", "exposure_time_absolute=10"], check=True)
     subprocess.run(["v4l2-ctl", "-d", dev_path, "-c", "gain=25"], check=True)
-    subprocess.run(["v4l2-ctl", "-d", dev_path, "-c", "zoom_absolute=450"], check=True)
+    subprocess.run(["v4l2-ctl", "-d", dev_path, "-c", "zoom_absolute=0"], check=True)
 except (subprocess.CalledProcessError, FileNotFoundError) as error:
     print(f"Warning during V4L2 config: {error}")
 # 1. Define board parameters matching your generated PDF
