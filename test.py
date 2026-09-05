@@ -30,7 +30,10 @@ cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 if not cap.isOpened():
     raise RuntimeError(f"Could not open camera at {dev_path}")
 
-base_options = python.BaseOptions(model_asset_path="face_landmarker.task")
+base_options = python.BaseOptions(
+    model_asset_path="face_landmarker.task",
+    delegate=python.BaseOptions.Delegate.GPU,
+)
 landmarker_options = vision.FaceLandmarkerOptions(
     base_options=base_options,
     running_mode=vision.RunningMode.VIDEO,
@@ -38,8 +41,13 @@ landmarker_options = vision.FaceLandmarkerOptions(
 )
 landmarker = vision.FaceLandmarker.create_from_options(landmarker_options)
 
-window_name = 'Live Camera Stream (Software Zoom)'
+window_name = 'Live Camera Stream'
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+cv2.setWindowProperty(
+    window_name,
+    cv2.WND_PROP_FULLSCREEN,
+    cv2.WINDOW_FULLSCREEN,
+)
 
 calibration_targets = np.array(
     [
@@ -49,16 +57,47 @@ calibration_targets = np.array(
         [0.1, 0.5],
         [0.5, 0.5],
         [0.9, 0.5],
-        [0.9, 0.1],
+        [0.1, 0.9],
         [0.5, 0.9],
         [0.9, 0.9],
-        [0.1, 0.9],
     ],
     dtype=np.float64,
 )
 calibration_index = np.int64(0)
 calibration_samples = []
 gaze_coefficients = None
+eye_corner_indices = np.array([33, 133, 362, 263], dtype=np.int32)
+validation_targets = np.array(
+    [
+        [0.5, 0.5],
+        [0.5, 0.25],
+        [0.5, 0.75],
+        [0.25, 0.5],
+        [0.75, 0.5],
+        [0.2, 0.2],
+        [0.8, 0.2],
+        [0.2, 0.8],
+        [0.8, 0.8],
+    ],
+    dtype=np.float64,
+)
+validation_index = np.int64(0)
+validation_results = []
+
+
+def quadratic_features(relative_gaze):
+    delta_x, delta_y = relative_gaze
+    return np.array(
+        [
+            1.0,
+            delta_x,
+            delta_y,
+            delta_x * delta_x,
+            delta_x * delta_y,
+            delta_y * delta_y,
+        ],
+        dtype=np.float64,
+    )
 
 stream_start = np.int64(cv2.getTickCount())
 previous_time = np.int64(cv2.getTickCount())
@@ -98,6 +137,7 @@ while cap.isOpened():
     result = landmarker.detect_for_video(mp_image, int(timestamp_ms))
 
     iris_center = None
+    relative_gaze = None
     gaze_position = None
     if result.face_landmarks:
         face_landmarks = result.face_landmarks[0]
@@ -115,6 +155,18 @@ while cap.isOpened():
 
         if len(iris_pixels) > 0:
             iris_center = np.mean(iris_pixels, axis=0)
+            eye_corner_pixels = np.array(
+                [
+                    [
+                        face_landmarks[index].x * frame.shape[1],
+                        face_landmarks[index].y * frame.shape[0],
+                    ]
+                    for index in eye_corner_indices
+                ],
+                dtype=np.float64,
+            )
+            eye_center = np.mean(eye_corner_pixels, axis=0)
+            relative_gaze = iris_center - eye_center
             cv2.circle(
                 frame,
                 (int(iris_center[0]), int(iris_center[1])),
@@ -124,10 +176,7 @@ while cap.isOpened():
             )
 
             if gaze_coefficients is not None:
-                gaze_input = np.array(
-                    [iris_center[0], iris_center[1], 1.0],
-                    dtype=np.float64,
-                )
+                gaze_input = quadratic_features(relative_gaze)
                 gaze_position = np.array(
                     [
                         np.dot(gaze_input, gaze_coefficients[:, 0]),
@@ -166,6 +215,44 @@ while cap.isOpened():
             (0, 255, 255),
             2,
         )
+    elif validation_index < len(validation_targets):
+        validation_target = validation_targets[validation_index]
+        validation_target_pixel = np.multiply(
+            validation_target,
+            np.array([frame.shape[1], frame.shape[0]], dtype=np.float64),
+        )
+        cv2.circle(
+            frame,
+            (int(validation_target_pixel[0]), int(validation_target_pixel[1])),
+            9,
+            (255, 0, 0),
+            -1,
+        )
+        cv2.putText(
+            frame,
+            f"Validation: look at dot and press SPACE ({validation_index + 1}/{len(validation_targets)})",
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 0),
+            2,
+        )
+
+        if gaze_position is not None:
+            cv2.circle(
+                frame,
+                (int(gaze_position[0]), int(gaze_position[1])),
+                24,
+                (0, 0, 255),
+                2,
+            )
+            cv2.circle(
+                frame,
+                (int(gaze_position[0]), int(gaze_position[1])),
+                5,
+                (0, 0, 255),
+                -1,
+            )
     elif gaze_position is not None:
         cv2.circle(
             frame,
@@ -197,7 +284,7 @@ while cap.isOpened():
     if key == ord('q'):
         break
     if key == ord(' ') and gaze_coefficients is None:
-        if iris_center is None:
+        if relative_gaze is None:
             print("Could not capture iris position; keep both eyes visible.")
         else:
             target_pixel = np.multiply(
@@ -205,18 +292,24 @@ while cap.isOpened():
                 np.array([frame.shape[1], frame.shape[0]], dtype=np.float64),
             )
             calibration_samples.append(
-                [iris_center[0], iris_center[1], target_pixel[0], target_pixel[1]]
+                [
+                    relative_gaze[0],
+                    relative_gaze[1],
+                    target_pixel[0],
+                    target_pixel[1],
+                ]
             )
             print(
-                f"Captured calibration point {calibration_index + 1}/4: "
-                f"iris=({iris_center[0]:.1f}, {iris_center[1]:.1f})",
+                f"Captured calibration point {calibration_index + 1}/9: "
+                f"relative=({relative_gaze[0]:.1f}, {relative_gaze[1]:.1f})",
                 flush=True,
             )
             calibration_index = np.add(calibration_index, np.int64(1))
             if calibration_index == np.int64(9):
                 samples = np.array(calibration_samples, dtype=np.float64)
-                design_matrix = np.column_stack(
-                    (samples[:, 0], samples[:, 1], np.ones(len(samples)))
+                design_matrix = np.array(
+                    [quadratic_features(sample[:2]) for sample in samples],
+                    dtype=np.float64,
                 )
                 gaze_coefficients = np.linalg.lstsq(
                     design_matrix,
@@ -224,6 +317,53 @@ while cap.isOpened():
                     rcond=None,
                 )[0]
                 print("Calibration complete. Tracking gaze.", flush=True)
+
+    if (
+        key == ord(' ')
+        and gaze_coefficients is not None
+        and validation_index < len(validation_targets)
+    ):
+        validation_target = validation_targets[validation_index]
+        target_pixel = np.multiply(
+            validation_target,
+            np.array([frame.shape[1], frame.shape[0]], dtype=np.float64),
+        )
+        if gaze_position is None:
+            print("Could not estimate gaze; keep both eyes visible.", flush=True)
+        else:
+            error_pixels = float(np.linalg.norm(gaze_position - target_pixel))
+            validation_results.append(
+                [
+                    target_pixel[0],
+                    target_pixel[1],
+                    gaze_position[0],
+                    gaze_position[1],
+                    error_pixels,
+                ]
+            )
+            print(
+                f"Validation point {validation_index + 1}/{len(validation_targets)}: "
+                f"true=({target_pixel[0]:.1f}, {target_pixel[1]:.1f}), "
+                f"estimated=({gaze_position[0]:.1f}, {gaze_position[1]:.1f}), "
+                f"error={error_pixels:.1f}px",
+                flush=True,
+            )
+            validation_index = np.add(validation_index, np.int64(1))
+            if validation_index == len(validation_targets):
+                results = np.array(validation_results, dtype=np.float64)
+                print(
+                    f"Validation complete: mean error={np.mean(results[:, 4]):.1f}px, "
+                    f"max error={np.max(results[:, 4]):.1f}px",
+                    flush=True,
+                )
+                np.savetxt(
+                    "validation_results.csv",
+                    results,
+                    delimiter=",",
+                    header="x_true,y_true,x_est,y_est,error_pixels",
+                    comments="",
+                )
+                print("Saved validation results to validation_results.csv", flush=True)
 
     current_time = np.int64(cv2.getTickCount())
     tick_frequency = np.float64(cv2.getTickFrequency())
