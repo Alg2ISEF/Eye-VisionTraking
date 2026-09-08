@@ -1,5 +1,21 @@
 
 import numpy as np
+from pathlib import Path
+import cv2
+from dataclasses import dataclass , field
+import time
+from camera import HoldToRecord
+from typing import Optional
+
+@dataclass
+class Paths:
+    output_dir: Path
+    validation_output_dir: Path
+    jitter_output_dir: Path
+    run_stamp: str
+
+
+
 
 def reject_outliers(samples: np.ndarray, threshold: float) -> np.ndarray:
     """Drop rows whose per-dimension deviation from the median exceeds
@@ -44,3 +60,17 @@ def rotation_matrix_to_euler(rot: np.ndarray) -> np.ndarray:
         yaw = np.arctan2(-rot[2, 0], sy)
         roll = 0.0
     return np.array([yaw, pitch, roll], dtype=np.float64)
+
+def setup_paths(cfg) -> Paths:
+    output_dir = Path(cfg.output_dir)
+    validation_output_dir = output_dir / "validation_data" / "validation"
+    jitter_output_dir = output_dir / "validation_data" / "jitter"
+    validation_output_dir.mkdir(parents=True, exist_ok=True)
+    jitter_output_dir.mkdir(parents=True, exist_ok=True)
+    run_stamp = time.strftime("%Y%m%d-%H%M%S")
+    return Paths(output_dir, validation_output_dir, jitter_output_dir, run_stamp)
+
+
+def setup_window(window_name: str) -> None:
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)

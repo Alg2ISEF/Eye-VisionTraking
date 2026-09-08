@@ -174,3 +174,22 @@ class HoldToRecord:
         if self.recording and sample is not None:
             self.samples.append(sample)
         return False
+
+    
+def grab_and_prepare_frame(grabber: CameraGrabber, last_sequence: int,
+                            cropper: DynamicCropper, cfg):
+    """Pull the next raw frame and crop/resize it. Returns
+    (frame, last_sequence, finished, frame_start) where frame is None if no
+    new frame was available yet."""
+    raw_frame, last_sequence, finished = grabber.get_next(last_sequence)
+    if raw_frame is None:
+        return None, last_sequence, finished, None
+
+    frame_start = cv2.getTickCount()
+    raw_frame = cv2.flip(raw_frame, 1)
+
+    x0, y0, cw, ch = cropper.crop_rect()
+    cropped = raw_frame[y0:y0 + ch, x0:x0 + cw]
+    frame = cv2.resize(cropped, (cfg.output_width, cfg.output_height),
+                        interpolation=cv2.INTER_LINEAR)
+    return frame, last_sequence, finished, frame_start

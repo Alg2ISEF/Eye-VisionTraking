@@ -6,9 +6,9 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 from helper import rotation_matrix_to_euler
 from catboost import CatBoostRegressor
+from camera import HoldToRecord
 from config import Config
 from dataclasses import dataclass, field
-
 
 
 
@@ -116,6 +116,34 @@ class GazeModel:
         model.is_fit = True
         return model
 
+@dataclass
+class Session:
+    """All mutable state that used to live as loose locals in main()."""
+    gaze_model: Optional[GazeModel] = None
+
+    calibration_index: int = 0
+    calibration_samples: list = field(default_factory=list)
+    calibration_burst: HoldToRecord = field(default_factory=HoldToRecord)
+
+    validation_index: int = 0
+    validation_results: list = field(default_factory=list)
+    validation_burst: HoldToRecord = field(default_factory=HoldToRecord)
+
+    jitter_complete: bool = False
+    jitter_positions: list = field(default_factory=list)
+    jitter_burst: HoldToRecord = field(default_factory=HoldToRecord)
+
+    def reset(self) -> None:
+        self.calibration_index = 0
+        self.calibration_samples = []
+        self.calibration_burst = HoldToRecord()
+        self.gaze_model = None
+        self.validation_index = 0
+        self.validation_results = []
+        self.validation_burst = HoldToRecord()
+        self.jitter_complete = False
+        self.jitter_positions = []
+        self.jitter_burst = HoldToRecord()
 
 
 def build_landmarker(cfg: Config) -> mp_vision.FaceLandmarker:
