@@ -11,7 +11,7 @@ import camera
 from camera import open_camera , HoldToRecord
 import cv2
 import numpy as np
-from helper import reject_outliers
+from helper import reject_outliers , to_pixel
 import mediapipe as mp
 
 # --------------------------------------------------------------------------

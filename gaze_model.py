@@ -7,6 +7,7 @@ from mediapipe.tasks.python import vision as mp_vision
 from helper import rotation_matrix_to_euler
 from catboost import CatBoostRegressor
 from config import Config
+from dataclasses import dataclass, field
 
 
 
